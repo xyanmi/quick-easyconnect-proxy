@@ -6,6 +6,10 @@
 
 本工具通过封装开源镜像 [hagb/docker-easyconnect](https://github.com/docker-easyconnect/docker-easyconnect/tree/master)，提供现代化的 UI 和本地 SOCKS5/HTTP 智能分流代理，实现"业务流量走内网，日常流量走直连"的网络隔离效果。
 
+## 📸 界面预览
+
+![Quick EasyConnect Proxy 界面预览](public/homepage.png)
+
 ## ⚠️ 免责声明
 
 1. **本项目与深信服科技 (Sangfor) 无任何官方关联。**
