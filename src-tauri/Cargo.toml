@@ -29,3 +29,7 @@ http-body-util = "0.1"
 tokio-socks = "0.5"
 regex = "1"
 chrono = "0.4"
+
+[profile.release]
+strip = true
+lto = true

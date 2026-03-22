@@ -1,6 +1,9 @@
 # Dependencies
 node_modules/
 
+# Claude Code
+.claude/
+
 # Build outputs
 dist/
 src-tauri/target/
