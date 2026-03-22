@@ -1,14 +1,11 @@
 import { PageType } from "../App";
 import {
   Wifi,
-  WifiOff,
   Settings,
   FileText,
   Globe,
   Circle,
   HelpCircle,
-  ShieldCheck,
-  Plug,
   Activity,
 } from "lucide-react";
 import { useAppStore } from "../stores/useAppStore";
