@@ -1,0 +1,20 @@
+[source.crates-io]
+replace-with = 'tuna'
+
+[source.tuna]
+registry = "https://mirrors.tuna.tsinghua.edu.cn/git/crates.io-index.git"
+
+[source.sjtu]
+registry = "https://mirrors.sjtug.sjtu.edu.cn/git/crates.io-index"
+
+[source.rustcc]
+registry = "git://crates.rustcc.cn/crates.io-index"
+
+[http]
+proxy = "127.0.0.1:7890"
+
+[https]
+proxy = "127.0.0.1:7890"
+
+[net]
+git-fetch-with-cli = true

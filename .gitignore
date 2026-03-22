@@ -1,0 +1,46 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+src-tauri/target/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Logs
+*.log
+npm-debug.log*
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Tauri
+src-tauri/Cargo.lock
+
+# Temporary files
+*.tmp
+*.temp
+
+# Installer outputs (generated during build)
+*.msi
+*.exe
+!src-tauri/icons/*.png
+
+# Test files
+*.test.js
+*.spec.js.bak
+
+# User config (may contain personal info)
+config.json
+.ecdata/
