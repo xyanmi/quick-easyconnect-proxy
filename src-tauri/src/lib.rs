@@ -7,9 +7,9 @@ mod websockify;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
-use tauri::menu::{Menu, MenuItem};
-use tauri::tray::TrayIconBuilder;
-use tauri::{Emitter, Manager};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::{TrayIcon, TrayIconBuilder};
+use tauri::{Emitter, Manager, Runtime};
 use tauri_plugin_shell::ShellExt;
 
 // Global state for container and websockify management
@@ -23,6 +23,74 @@ static CONTAINER_ID: Mutex<Option<String>> = Mutex::new(None);
 // Store shutdown senders
 static WEBSOCKIFY_SHUTDOWN: Mutex<Option<tokio::sync::broadcast::Sender<()>>> = Mutex::new(None);
 static HTTP_PROXY_SHUTDOWN: Mutex<Option<tokio::sync::broadcast::Sender<()>>> = Mutex::new(None);
+
+// Store tray handle for updating status
+static TRAY_HANDLE: Mutex<Option<TrayIcon>> = Mutex::new(None);
+
+/// Update tray tooltip with current status
+fn update_tray_tooltip<R: Runtime>(app: &tauri::AppHandle<R>) {
+    let connected = CONTAINER_RUNNING.load(Ordering::SeqCst);
+    let http_running = HTTP_PROXY_RUNNING.load(Ordering::SeqCst);
+
+    let status = if connected {
+        if http_running {
+            "Connected (HTTP Proxy: ON)"
+        } else {
+            "Connected (HTTP Proxy: OFF)"
+        }
+    } else {
+        "Disconnected"
+    };
+
+    let tooltip = format!("Quick EasyConnect Proxy\nStatus: {}", status);
+
+    if let Ok(mut tray) = TRAY_HANDLE.lock() {
+        if let Some(tray_icon) = tray.as_ref() {
+            let _ = tray_icon.set_tooltip(Some(&tooltip));
+        }
+    }
+}
+
+/// Rebuild tray menu with current status
+fn rebuild_tray_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), Box<dyn std::error::Error>> {
+    let connected = CONTAINER_RUNNING.load(Ordering::SeqCst);
+
+    // Create status text
+    let status_text = if connected {
+        "● Connected"
+    } else {
+        "○ Disconnected"
+    };
+
+    // Create menu items
+    let status_item = MenuItem::with_id(app, "status", status_text, false, None::<&str>)?;
+    let separator1 = PredefinedMenuItem::separator(app)?;
+    let connect_item = MenuItem::with_id(app, "connect", "Connect", !connected, None::<&str>)?;
+    let disconnect_item = MenuItem::with_id(app, "disconnect", "Disconnect", connected, None::<&str>)?;
+    let separator2 = PredefinedMenuItem::separator(app)?;
+    let show_item = MenuItem::with_id(app, "show", "Show Window", true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+
+    // Create tray menu
+    let menu = Menu::with_items(app, &[
+        &status_item,
+        &separator1,
+        &connect_item,
+        &disconnect_item,
+        &separator2,
+        &show_item,
+        &quit_item,
+    ])?;
+
+    // Update tray with new menu
+    if let Ok(tray) = TRAY_HANDLE.lock() {
+        if let Some(tray_icon) = tray.as_ref() {
+            let _ = tray_icon.set_menu(Some(menu));
+        }
+    }
+
+    Ok(())
+}
 
 /// Check if Docker command is available on the system
 #[tauri::command]
@@ -106,6 +174,10 @@ async fn start_network_container(
 
         CONTAINER_RUNNING.store(true, Ordering::SeqCst);
 
+        // Update tray status
+        let _ = rebuild_tray_menu(&app);
+        update_tray_tooltip(&app);
+
         // Emit success event to frontend
         app.emit("container-started", &container_id)
             .map_err(|e| format!("Failed to emit event: {}", e))?;
@@ -145,6 +217,10 @@ async fn stop_network_container(app: tauri::AppHandle) -> Result<(), String> {
     if let Ok(mut id) = CONTAINER_ID.lock() {
         *id = None;
     }
+
+    // Update tray status
+    let _ = rebuild_tray_menu(&app);
+    update_tray_tooltip(&app);
 
     // Emit event to frontend
     app.emit("container-stopped", ())
@@ -236,20 +312,28 @@ async fn start_http_proxy(app: tauri::AppHandle, rules: Vec<config::ProxyRuleCon
         rules: proxy_rules,
     };
 
+    // Clone app for the async task and for updating tray
+    let app_for_proxy = app.clone();
+    let app_for_tray = app.clone();
+
     // Start HTTP proxy server
     tokio::spawn(async move {
-        if let Err(e) = http_proxy::start_http_proxy(app, config, shutdown_rx, running_flag).await {
+        if let Err(e) = http_proxy::start_http_proxy(app_for_proxy, config, shutdown_rx, running_flag).await {
             eprintln!("HTTP Proxy error: {}", e);
         }
     });
 
     HTTP_PROXY_RUNNING.store(true, Ordering::SeqCst);
+
+    // Update tray tooltip
+    update_tray_tooltip(&app_for_tray);
+
     Ok(())
 }
 
 /// Stop HTTP proxy server
 #[tauri::command]
-async fn stop_http_proxy() -> Result<(), String> {
+async fn stop_http_proxy(app: tauri::AppHandle) -> Result<(), String> {
     if HTTP_PROXY_RUNNING.load(Ordering::SeqCst) {
         // Send shutdown signal
         if let Ok(mut shutdown) = HTTP_PROXY_SHUTDOWN.lock() {
@@ -258,6 +342,9 @@ async fn stop_http_proxy() -> Result<(), String> {
             }
         }
         HTTP_PROXY_RUNNING.store(false, Ordering::SeqCst);
+
+        // Update tray tooltip
+        update_tray_tooltip(&app);
     }
     Ok(())
 }
@@ -294,24 +381,48 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
-            // Create tray menu items
+            // Get the main window
+            let window = app.get_webview_window("main").unwrap();
+
+            // Handle window close event - minimize to tray instead of closing
+            let window_clone = window.clone();
+            window.on_window_event(move |event| {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    // Prevent the window from closing
+                    api.prevent_close();
+                    // Hide the window instead
+                    let _ = window_clone.hide();
+                }
+            });
+
+            // Create tray menu with initial status
+            let connected = CONTAINER_RUNNING.load(Ordering::SeqCst);
+            let status_text = if connected { "● Connected" } else { "○ Disconnected" };
+
+            let status_item = MenuItem::with_id(app, "status", status_text, false, None::<&str>)?;
+            let separator1 = PredefinedMenuItem::separator(app)?;
             let connect_item = MenuItem::with_id(app, "connect", "Connect", true, None::<&str>)?;
-            let disconnect_item = MenuItem::with_id(app, "disconnect", "Disconnect", true, None::<&str>)?;
+            let disconnect_item = MenuItem::with_id(app, "disconnect", "Disconnect", false, None::<&str>)?;
+            let separator2 = PredefinedMenuItem::separator(app)?;
             let show_item = MenuItem::with_id(app, "show", "Show Window", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
 
             // Create tray menu
             let menu = Menu::with_items(app, &[
+                &status_item,
+                &separator1,
                 &connect_item,
                 &disconnect_item,
+                &separator2,
                 &show_item,
                 &quit_item,
             ])?;
 
             // Build tray icon
-            let _tray = TrayIconBuilder::new()
+            let tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
+                .tooltip("Quick EasyConnect Proxy\nStatus: Disconnected")
                 .on_menu_event(|app, event| {
                     match event.id().as_ref() {
                         "connect" => {
@@ -332,7 +443,22 @@ pub fn run() {
                         _ => {}
                     }
                 })
+                .on_tray_icon_event(|tray, event| {
+                    // Handle left click on tray icon - show window
+                    if let tauri::tray::TrayIconEvent::Click { button: tauri::tray::MouseButton::Left, .. } = event {
+                        let app = tray.app_handle();
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                })
                 .build(app)?;
+
+            // Store tray handle for later updates
+            if let Ok(mut tray_handle) = TRAY_HANDLE.lock() {
+                *tray_handle = Some(tray);
+            }
 
             Ok(())
         })
